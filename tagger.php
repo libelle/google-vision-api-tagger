@@ -34,7 +34,7 @@ require 'GoogleCloudVision.php';
 
 use GoogleCloudVisionPHP\GoogleCloudVision;
 
-$options = getopt('s:i::c::vafnh');
+$options = getopt('s:i::c::vafnhw');
 if (!$options || isset($options['h']) || !isset($options['s']) || empty($options['s']))
 {
     echo "Usage: tagger.php -s [source directory]\n";
@@ -44,10 +44,12 @@ if (!$options || isset($options['h']) || !isset($options['s']) || empty($options
     echo "      k (keywords)\n";
     echo "      o (OCR text)\n";
     echo "      l (logos)\n";
+    echo "      m (landmarks)\n";
     echo "      c (color information)\n";
     echo "      field list defaults to all fields being active\n";
     echo "   -h is help (you're reading it!)\n";
     echo "   -v is verbose\n";
+    echo "   -w is write summary file\n";
     echo "   -a is anonymize faces before uploading\n";
     echo "   -f is force reprocessing\n";
     echo "   -n is no cleanup\n";
@@ -65,8 +67,9 @@ $verbose = isset($options['v']);
 $anonymize = isset($options['a']);
 $force = isset($options['f']);
 $noclean = isset($options['n']);
-$fields = isset($options['i'])?$options['i']:'kolc';
+$fields = isset($options['i'])?$options['i']:'kolcm';
 $cmode = isset($options['c'])?$options['c']:'p';
+$summary = isset($options['w']);
 
 if ($verbose) echo "Running in verbose mode\n";
 if ($verbose) echo "Processing images from {$options['s']}\n";
@@ -120,6 +123,8 @@ foreach ($objects as $name => $object)
 
             $work_image = LabeledImage::scaledVersion($jpeg_file, $config);
 
+            if ($noclean)
+                copy($work_image,str_replace('.jpg','-orig.jpg',$work_image));
             $faces = array();
             if ($anonymize)
             {
@@ -216,6 +221,16 @@ foreach ($objects as $name => $object)
                     $tags[] = $ta['description'];
             }
 
+            if (strpos($fields,'m')!==false  && isset($response['responses']) && isset($response['responses'][0])
+                && isset($response['responses'][0]['landmarkAnnotations']))
+            {
+                if ($verbose) echo "---> Processing landmarks\n";
+                foreach ($response['responses'][0]['landmarkAnnotations'] as $ta)
+                    $tags[] = $ta['description'];
+            }
+
+
+
             if (strpos($fields,'o')!==false && isset($response['responses']) && isset($response['responses'][0])
                 && isset($response['responses'][0]['textAnnotations'])
                 && isset($response['responses'][0]['textAnnotations'][0])
@@ -224,6 +239,10 @@ foreach ($objects as $name => $object)
                 if ($verbose) echo "---> Processing OCR text \n";
                 $headers['caption'] = $response['responses'][0]['textAnnotations'][0]['description'];
             }
+
+            if ($summary)
+                file_put_contents(str_replace('.jpg','-summary.txt',$work_image),
+                    print_r(array_merge(array($headers['caption']),$tags),true));
 
             $headers['keywords'] = array_merge($headers['keywords'], $tags);
             if ($verbose) echo "--> Writing $source_file\n";
