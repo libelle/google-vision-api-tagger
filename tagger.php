@@ -34,7 +34,7 @@ require 'GoogleCloudVision.php';
 
 use GoogleCloudVisionPHP\GoogleCloudVision;
 
-$options = getopt('s:i::c::vafnhw');
+$options = getopt('s:i::c::vafnhwo');
 if (!$options || isset($options['h']) || !isset($options['s']) || empty($options['s']))
 {
     echo "Usage: tagger.php -s [source directory]\n";
@@ -53,6 +53,7 @@ if (!$options || isset($options['h']) || !isset($options['s']) || empty($options
     echo "   -a is anonymize faces before uploading\n";
     echo "   -f is force reprocessing\n";
     echo "   -n is no cleanup\n";
+    echo "   -o is only run anonymize prepass, implies -n and -a\n";
     echo "   -c [mode] is which color label mapping type is used by the color option:\n";
     echo "       c - use the set of CSS named colors\n";
     echo "       p - use only the primary/secondary/tertiary RGB color wheel (default)\n";
@@ -70,6 +71,12 @@ $noclean = isset($options['n']);
 $fields = isset($options['i'])?$options['i']:'kolcm';
 $cmode = isset($options['c'])?$options['c']:'p';
 $summary = isset($options['w']);
+$prepass = isset($options['o']);
+if ($prepass)
+{
+    $anonymize = true;
+    $noclean = true;
+}
 
 if ($verbose) echo "Running in verbose mode\n";
 if ($verbose) echo "Processing images from {$options['s']}\n";
@@ -149,11 +156,12 @@ foreach ($objects as $name => $object)
                     $h = ($y2 - $y1);
                     // icky code to pixelate an ellipse within the detected face
                     $copy = imagecreatefromjpeg($work_image);
-                    imagefilter($copy, IMG_FILTER_PIXELATE, 20);
+                    $sm = min($w/10,$h/10,$config['resolution']/25);
+                    imagefilter($copy, IMG_FILTER_PIXELATE, max($sm,10));
                     $mask = imagecreatetruecolor($source_imagex, $source_imagey);
                     $transparent = imagecolorallocate($mask, 255, 0, 0);
                     imagecolortransparent($mask, $transparent);
-                    imagefilledellipse($mask, $x1 + $w / 2, $y1 + $h / 2, $w * 0.6, $h * 0.6, $transparent);
+                    imagefilledellipse($mask, $x1 + $w / 2, $y1 + $h / 2, $w * 0.75, $h * 0.75, $transparent);
                     $red = imagecolorallocate($mask, 0, 0, 0);
                     imagecopymerge($copy, $mask, 0, 0, 0, 0, $source_imagex, $source_imagey, 100);
                     imagecolortransparent($copy, $red);
@@ -167,89 +175,90 @@ foreach ($objects as $name => $object)
                 imagedestroy($image);
             }
 
-            if ($verbose) echo "--> Getting tags from Google Vision\n";
-            $gcv->setImage($work_image);
-            $gcv->addFeatureUnspecified(1);
-            $gcv->addFeatureLandmarkDetection(2);
-            $gcv->addFeatureLogoDetection(2);
-            $gcv->addFeatureLabelDetection(5);
-            $gcv->addFeatureOCR(1);
-            //$gcv->addFeatureSafeSeachDetection(0);
-            $gcv->addFeatureImageProperty(1);
-            $gcv->setImageContext(array("languageHints" => array($config['language'])));
-            $response = $gcv->request();
-            if ($noclean)
+            if (!$prepass)
             {
-                file_put_contents($work_image . '.response-json.txt', print_r($response, true));
-            }
-            $tags = array();
-            if (strpos($fields,'k')!==false && isset($response['responses']) && isset($response['responses'][0])
-                && isset($response['responses'][0]['labelAnnotations']))
-            {
-                if ($verbose) echo "---> Processing keywords\n";
-                foreach ($response['responses'][0]['labelAnnotations'] as $ta)
-                    $tags[] = $ta['description'];
-            }
-            if (strpos($fields,'c')!==false && isset($response['responses']) && isset($response['responses'][0])
-                && isset($response['responses'][0]['imagePropertiesAnnotation'])
-                && isset($response['responses'][0]['imagePropertiesAnnotation']['dominantColors'])
-                && isset($response['responses'][0]['imagePropertiesAnnotation']['dominantColors']['colors'])
-            )
-            {
-                if ($verbose) echo "---> Processing dominant colors\n";
-                $colors = array();
-                foreach ($response['responses'][0]['imagePropertiesAnnotation']['dominantColors']['colors'] as $dc)
+                if ($verbose) echo "--> Getting tags from Google Vision\n";
+                $gcv->setImage($work_image);
+                $gcv->addFeatureUnspecified(1);
+                $gcv->addFeatureLandmarkDetection(2);
+                $gcv->addFeatureLogoDetection(2);
+                $gcv->addFeatureLabelDetection(5);
+                $gcv->addFeatureOCR(1);
+                //$gcv->addFeatureSafeSeachDetection(0);
+                $gcv->addFeatureImageProperty(1);
+                $gcv->setImageContext(array("languageHints" => array($config['language'])));
+                $response = $gcv->request();
+                if ($noclean)
                 {
-
-                    if ($dc['score'] > 0.1)
-                    {
-                        $c = ColorNamer::closest(array($dc['color']['red'], $dc['color']['green'], $dc['color']['blue']));
-                        if ($cmode == 'c')
-                            $colors[$c['css']] = 1;
-                        else
-                            $colors[$c['wheel']] = 1;
-                    }
+                    file_put_contents($work_image . '.response-json.txt', print_r($response, true));
                 }
-                $tags = array_merge($tags, array_keys($colors));
+                $tags = array();
+                if (strpos($fields, 'k') !== false && isset($response['responses']) && isset($response['responses'][0])
+                    && isset($response['responses'][0]['labelAnnotations']))
+                {
+                    if ($verbose) echo "---> Processing keywords\n";
+                    foreach ($response['responses'][0]['labelAnnotations'] as $ta)
+                        $tags[] = $ta['description'];
+                }
+                if (strpos($fields, 'c') !== false && isset($response['responses']) && isset($response['responses'][0])
+                    && isset($response['responses'][0]['imagePropertiesAnnotation'])
+                    && isset($response['responses'][0]['imagePropertiesAnnotation']['dominantColors'])
+                    && isset($response['responses'][0]['imagePropertiesAnnotation']['dominantColors']['colors'])
+                )
+                {
+                    if ($verbose) echo "---> Processing dominant colors\n";
+                    $colors = array();
+                    foreach ($response['responses'][0]['imagePropertiesAnnotation']['dominantColors']['colors'] as $dc)
+                    {
+
+                        if ($dc['score'] > $config['color_threshold'])
+                        {
+                            $c = ColorNamer::closest(array($dc['color']['red'], $dc['color']['green'], $dc['color']['blue']));
+                            if ($cmode == 'c')
+                                $colors[$c['css']] = 1;
+                            else
+                                $colors[$c['wheel']] = 1;
+                        }
+                    }
+                    $tags = array_merge($tags, array_keys($colors));
+                }
+
+                if (strpos($fields, 'l') !== false && isset($response['responses']) && isset($response['responses'][0])
+                    && isset($response['responses'][0]['logoAnnotations']))
+                {
+                    if ($verbose) echo "---> Processing logos\n";
+                    foreach ($response['responses'][0]['logoAnnotations'] as $ta)
+                        $tags[] = $ta['description'];
+                }
+
+                if (strpos($fields, 'm') !== false && isset($response['responses']) && isset($response['responses'][0])
+                    && isset($response['responses'][0]['landmarkAnnotations']))
+                {
+                    if ($verbose) echo "---> Processing landmarks\n";
+                    foreach ($response['responses'][0]['landmarkAnnotations'] as $ta)
+                        $tags[] = $ta['description'];
+                }
+
+
+                if (strpos($fields, 'o') !== false && isset($response['responses']) && isset($response['responses'][0])
+                    && isset($response['responses'][0]['textAnnotations'])
+                    && isset($response['responses'][0]['textAnnotations'][0])
+                )
+                {
+                    if ($verbose) echo "---> Processing OCR text \n";
+                    $headers['caption'] = $response['responses'][0]['textAnnotations'][0]['description'];
+                }
+
+                if ($summary)
+                    file_put_contents(str_replace('.jpg', '-summary.txt', $work_image),
+                        print_r(array_merge(array($headers['caption']), $tags), true));
+
+                $headers['keywords'] = array_merge($headers['keywords'], $tags);
+                if ($verbose) echo "--> Writing $source_file\n";
+                LabeledImage::applyMetadataScript($config['exiv2_path'], $source_file, $headers);
+                if ($verbose) echo "--> Writing $source_file_xmp\n";
+                LabeledImage::applyMetadataScript($config['exiv2_path'], $source_file_xmp, $headers);
             }
-
-            if (strpos($fields,'l')!==false  && isset($response['responses']) && isset($response['responses'][0])
-                && isset($response['responses'][0]['logoAnnotations']))
-            {
-                if ($verbose) echo "---> Processing logos\n";
-                foreach ($response['responses'][0]['logoAnnotations'] as $ta)
-                    $tags[] = $ta['description'];
-            }
-
-            if (strpos($fields,'m')!==false  && isset($response['responses']) && isset($response['responses'][0])
-                && isset($response['responses'][0]['landmarkAnnotations']))
-            {
-                if ($verbose) echo "---> Processing landmarks\n";
-                foreach ($response['responses'][0]['landmarkAnnotations'] as $ta)
-                    $tags[] = $ta['description'];
-            }
-
-
-
-            if (strpos($fields,'o')!==false && isset($response['responses']) && isset($response['responses'][0])
-                && isset($response['responses'][0]['textAnnotations'])
-                && isset($response['responses'][0]['textAnnotations'][0])
-            )
-            {
-                if ($verbose) echo "---> Processing OCR text \n";
-                $headers['caption'] = $response['responses'][0]['textAnnotations'][0]['description'];
-            }
-
-            if ($summary)
-                file_put_contents(str_replace('.jpg','-summary.txt',$work_image),
-                    print_r(array_merge(array($headers['caption']),$tags),true));
-
-            $headers['keywords'] = array_merge($headers['keywords'], $tags);
-            if ($verbose) echo "--> Writing $source_file\n";
-            LabeledImage::applyMetadataScript($config['exiv2_path'], $source_file, $headers);
-            if ($verbose) echo "--> Writing $source_file_xmp\n";
-            LabeledImage::applyMetadataScript($config['exiv2_path'], $source_file_xmp, $headers);
-
             if (!$noclean)
             {
                 if ($verbose) echo "-> Cleaning up.\n";
